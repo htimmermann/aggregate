@@ -49,41 +49,42 @@ FALLBACK_PERSONA_HEADERS: list[str] = [
 ]
 
 
-DEFAULT_ENSEMBLE_MODEL_GROUPS: dict[str, list[str]] = {
-    "n1": [
-        "openai/gpt-5",
-    ],
-    "n5": [
-        "anthropic/claude-sonnet-4.5",
-        "google/gemini-2.5-flash",
-        "x-ai/grok-4-fast",
-        "z-ai/glm-4.6",
-    ],
-    "n10": [
-        "openai/gpt-5-mini",
-        "anthropic/claude-sonnet-4",
-        "google/gemini-2.5-pro",
-        "deepseek/deepseek-chat-v3-0324",
-        "minimax/minimax-m2",
-    ],
-    "n25": [
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "qwen/qwen3-235b-a22b-2507",
-        "google/gemini-2.0-flash-001",
-        "anthracite-org/magnum-v4-72b",
-        "meta-llama/llama-3.1-405b-instruct",
-        "z-ai/glm-4.5",
-        "z-ai/glm-4-32b",
-        "x-ai/grok-3",
-        "x-ai/grok-3-mini",
-        "amazon/nova-premier-v1",
-        "anthropic/claude-haiku-4.5",
-        "perplexity/sonar-pro",
-        "deepcogito/cogito-v2-preview-llama-405b",
-        "cohere/command-a",
-    ],
-}
+# DEFAULT_ENSEMBLE_MODEL_GROUPS: dict[str, list[str]] = {
+#     "n1": [
+#         "openai/gpt-5",
+#     ],
+#     "n5": [
+#         "anthropic/claude-sonnet-4.5",
+#         "google/gemini-2.5-flash",
+#         "x-ai/grok-4-fast",
+#         "z-ai/glm-4.6",
+#     ],
+#     "n10": [
+#         "openai/gpt-5-mini",
+#         "anthropic/claude-sonnet-4",
+#         "google/gemini-2.5-pro",
+#         "deepseek/deepseek-chat-v3-0324",
+#         "minimax/minimax-m2",
+#     ],
+#     "n25": [
+#         "openai/gpt-oss-120b",
+#         "openai/gpt-oss-20b",
+#         "qwen/qwen3-235b-a22b-2507",
+#         "google/gemini-2.0-flash-001",
+#         "anthracite-org/magnum-v4-72b",
+#         "meta-llama/llama-3.1-405b-instruct",
+#         "z-ai/glm-4.5",
+#         "z-ai/glm-4-32b",
+#         "x-ai/grok-3",
+#         "x-ai/grok-3-mini",
+#         "amazon/nova-premier-v1",
+#         "anthropic/claude-haiku-4.5",
+#         "perplexity/sonar-pro",
+#         "deepcogito/cogito-v2-preview-llama-405b",
+#         "cohere/command-a",
+#     ],
+# }
+DEFAULT_ENSEMBLE_MODEL_GROUPS = "openai/gpt-oss-120b"
 
 
 def build_structured_research_prompt(question: str) -> str:
