@@ -7,6 +7,7 @@ import os
 import ast
 import re
 from openai import OpenAI
+import numpy as np
 
 from forecasting_tools import (
     AskNewsSearcher,
@@ -38,6 +39,9 @@ class FallTemplateBot2025(ForecastBot):
         1 
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
+
+    DEFAULT_ENSEMBLE_MODEL_GROUPS = ["openai/gpt-oss-120b"] * 10
+
 
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
@@ -251,17 +255,29 @@ CONSTRAINTS:
             The last thing you write is your final answer as: "Probability: ZZ%", 0-100
             """
         )
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
-        binary_prediction: BinaryPrediction = await structure_output(
-            reasoning, BinaryPrediction, model=self.get_llm("parser", "llm")
-        )
-        decimal_pred = max(0.01, min(0.99, binary_prediction.prediction_in_decimal))
+
+        agent_forecasts = []
+
+        for agent in self.DEFAULT_ENSEMBLE_MODEL_GROUPS:
+
+            reasoning = await self.get_llm("default", "llm").invoke(prompt)
+            logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+            binary_prediction: BinaryPrediction = await structure_output(
+                reasoning, BinaryPrediction, model=self.get_llm("parser", "llm")
+            )
+            decimal_pred = max(0.01, min(0.99, binary_prediction.prediction_in_decimal))
+
+            logger.info(
+                f"Forecasted URL {question.page_url} with prediction: {decimal_pred}"
+            )
+
+            agent_forecasts.append(ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning))
 
         logger.info(
-            f"Forecasted URL {question.page_url} with prediction: {decimal_pred}"
+                f"Total Agent Forecasts {agent_forecasts}"
         )
-        return ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning)
+
+        return np.average(agent_forecasts)
 
     async def _run_forecast_on_multiple_choice(
         self, question: MultipleChoiceQuestion, research: str
