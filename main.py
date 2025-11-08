@@ -6,7 +6,7 @@ from typing import Literal
 import os
 import ast
 import re
-import openai
+from openai import OpenAI
 
 from forecasting_tools import (
     AskNewsSearcher,
@@ -29,26 +29,6 @@ from forecasting_tools import (
 
 logger = logging.getLogger(__name__)
 
-
-FALLBACK_PERSONA_HEADERS: list[str] = [
-    (
-        "You an expert leader-travel forecaster specialized in high-profile bilateral visits under legal, security, and political constraints. "
-        "Consider: bilateral relations, election calendars, legal exposure/extradition risk, sanctions/visas, summit piggybacking, security assessments, public schedules/NOTAMs, prior travel patterns, logistics windows, media trial balloons, "
-        "Show your reasoning limited to {output_limit} tokens; end with prediction as last tokens, on its own line"
-    ),
-    (
-        "You an expert summit-attendance forecaster specialized in leader participation at G7/NATO/UN events from diplomatic and logistical signals. "
-        "Consider: official agendas, domestic constraints, security/legal exposure, aircraft routing, proxy/ministerial substitutes, sanctions/visa issues, bilateral side-meetings, past attendance, health factors, last-minute cancellations, "
-        "Show your reasoning limited to {output_limit} tokens; end with prediction as last tokens, on its own line"
-    ),
-    (
-        "You an expert AI-benchmark forecaster specialized in leaderboard rank dynamics (e.g., Chatbot Arena) and #1 tenure. "
-        "Consider: new model launches, evaluation settings, voting volume/brigading, rate limits, dataset familiarity, inference latency/cost, community sentiment, scoring rule changes, prior tenure, meta-updates, "
-        "Show your reasoning limited to {output_limit} tokens; end with prediction as last tokens, on its own line"
-    ),
-]
-
-
 class FallTemplateBot2025(ForecastBot):
     """
     This is a copy of the template bot for Fall 2025 Metaculus AI Tournament.
@@ -59,114 +39,10 @@ class FallTemplateBot2025(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
 
-    def __init__(self, *args, output_limit: int | None = None, prompt_variants: list[dict[str, str]] | None = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Limit for the persona reasoning instruction; can be overridden via env var or arg
-        self.output_limit: int = (
-            output_limit if output_limit is not None else int(os.getenv("FORECAST_OUTPUT_LIMIT", "250"))
-        )
-        # Dynamic personas will be generated per-question using an LLM.
-        # Internal caches per-question
-        self._personas_by_question: dict[str, list[tuple[str, str]]] = {}
-        self._persona_cursor_by_question: dict[str, int] = {}
-
-    def _get_question_key(self, question: MetaculusQuestion) -> str:
-        return getattr(question, "page_url", None) or getattr(question, "question_text", None) or str(id(question))
-
-    async def _ensure_personas_for_question(self, question: MetaculusQuestion) -> None:
-        key = self._get_question_key(question)
-        if key in self._personas_by_question:
-            return
-        n = getattr(self, "predictions_per_research_report", None)
-        if not isinstance(n, int) or n <= 0:
-            n = int(os.getenv("FORECAST_ENSEMBLE_SIZE", "3"))
-
-        question_text = question.question_text
-        output_limit = self.output_limit
-        prompt = (
-            f"""
-You are generating {n} expert forecaster PERSONAS for the single forecasting QUESTION below.
-
-OBJECTIVE
-Return a Python list of {n} strings. Each string must be formatted EXACTLY:
-"You an expert <domain> forecaster specialized in <narrow specialization tied to the QUESTION>. Consider: <10 concise, comma-separated considerations>, Show your reasoning limited to {output_limit} tokens; end with prediction as last tokens, on its own line"
-
-INPUT
-QUESTION: <<{question_text}>>
-OUTPUT_LIMIT: {output_limit}
-
-RULES
-1) Infer exactly ONE concise <domain> phrase from the QUESTION and use it verbatim in EVERY item. Do not mix domains.
-   Examples of valid domain families (pick the closest one, or coin a concise equivalent): leader-travel; summit-attendance; AI-benchmark; podcast-chart; head-to-head podcast rank; Treasury-financing; US-macro releases nowcaster; state-GDP; spaceflight-operations; election-primaries; Euro-area sentiment; US consumer-sentiment; climate-anomaly; China inflation-cycle; rental-market; box-office; streaming-charts; geopolitical-bloc; diplomatic-recognition; West Africa border-policy; market-design; public-sector-efficiency; legal-outcome; IMF-program; fugitive-recapture; energy-program-policy; hydrology & drought; cross-country approval; candidacy-status; executive-clemency; party-alignment; web-availability; accords/treaty-signing; wealth-index composition; displacement-statistics; fuel-price nowcaster; legislative-throughput & confirmations; mortgage-rate; freight-transport; IPO-pipeline announcements; retail-platform policy; urban-complaints; UAP-reporting; air-service; asset-extremes; higher-ed metrics & compliance; social & media signal; live-events & awards; public-health surveillance; corporate-events.
-2) Create {n} DISTINCT experts by varying sub-specialization/background and which considerations they emphasize (e.g., logistics vs legal risk, signals vs baselines, etc.).
-3) The "Consider:" list must contain EXACTLY 10 items, comma-separated, short, domain-relevant, no trailing period.
-4) Each item MUST start exactly with "You an expert " and include the substrings "forecaster specialized in ", "Consider: ", and the trailing clause exactly as written above.
-5) Output ONLY the Python list literal with DOUBLE-QUOTED strings. No prose, no backticks, no numbering, no extra lines before/after.
-
-Now produce the list.
-"""
-        )
-        # Choose model for persona generation: prefer dedicated persona_generator, else default
-        persona_llm = self.get_llm("persona_generator", "llm")
-        if not persona_llm:
-            persona_llm = self.get_llm("default", "llm")
-        try:
-            raw = await persona_llm.invoke(prompt)  # type: ignore[union-attr]
-        except Exception as e:
-            logger.warning(f"Persona generation failed with error: {e}. Falling back to static personas.")
-            raw = None
-
-        headers: list[str] = []
-        if isinstance(raw, str):
-            # Try strict Python list literal parsing
-            try:
-                parsed = ast.literal_eval(raw)
-                if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
-                    headers = [s.strip() for s in parsed if isinstance(s, str)]
-            except Exception:
-                pass
-
-            if not headers:
-                # Fallback: extract quoted strings
-                matches = re.findall(r'"(You an expert .*?)"', raw, flags=re.DOTALL)
-                if matches:
-                    headers = [m.replace("\n", " ").strip() for m in matches]
-
-        if not headers:
-            # Final fallback: use static personas formatted with output_limit
-            headers = [h.format(output_limit=output_limit) for h in FALLBACK_PERSONA_HEADERS][:n]
-
-        # Normalize length
-        if len(headers) < n:
-            headers = headers + headers[: max(0, n - len(headers))]
-        if len(headers) > n:
-            headers = headers[:n]
-
-        # Derive persona names from domain phrase
-        personas: list[tuple[str, str]] = []
-        for i, h in enumerate(headers):
-            m = re.search(r"You an expert\s+(.*?)\s+forecaster\s+specialized\s+in", h, flags=re.IGNORECASE)
-            domain = m.group(1) if m else "Forecaster"
-            domain_slug = re.sub(r"[^A-Za-z0-9]+", "-", domain).strip("-")
-            name = f"{domain_slug or 'Persona'}-{i+1}"
-            personas.append((name, h))
-
-        self._personas_by_question[key] = personas
-        self._persona_cursor_by_question[key] = 0
-
-    async def _get_persona(self, question: MetaculusQuestion) -> tuple[str, str]:
-        key = self._get_question_key(question)
-        await self._ensure_personas_for_question(question)
-        personas = self._personas_by_question[key]
-        idx = self._persona_cursor_by_question.get(key, 0) % max(1, len(personas))
-        self._persona_cursor_by_question[key] = (idx + 1) % max(1, len(personas))
-        return personas[idx]
-
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
-            research = ""
-            researcher = self.get_llm("researcher")
 
+            #Comprehensive Research Prompt
             research_prompt = clean_indents(
                 f"""
 You are a research pre-processor for a forecasting system.
@@ -174,7 +50,7 @@ You are a research pre-processor for a forecasting system.
 Your only task is to collect and structure all factual, recent, and historically relevant information that a forecasting model would need to answer the question. Do not make a forecast. Do not express likelihood. Do not omit recent events if they could change the base rate. Do not add filler.
 
 The question is:
-{question}
+{question.question_text}
 
 OUTPUT MUST FOLLOW THE EXACT SECTION ORDER BELOW.
 
@@ -182,7 +58,7 @@ OUTPUT MUST FOLLOW THE EXACT SECTION ORDER BELOW.
 SECTIONS (IN THIS ORDER):
 
 QUESTION:
-Restate the question verbatim: {question};  This question's outcome will be determined by the specific criteria below: {question.resolution_criteria}, {question.fine_print}
+Restate the question verbatim: {question.question_text};  This question's outcome will be determined by the specific criteria below: {question.resolution_criteria}, {question.fine_print}
 
 QUESTION CLASSIFICATION:
 Identify the main type(s) from this list (pick 1–3):
@@ -301,6 +177,7 @@ CONSTRAINTS:
 - Do NOT output explanations of what you are doing.
 - Do NOT talk to the user; just output the sections.
 - Be terse but complete.
+
                 """
             )
             
@@ -330,22 +207,15 @@ CONSTRAINTS:
                     + "\n \n \n"
                 )
                 return agent_response
-
-            research_report = get_forecast(model_name='perplexity', message=research_prompt)
+            
+            research_report = get_forecast(model_name='openai/gpt-3.5-turbo', message=research_prompt)
            
             return research_report
+        
+    def make_forecast_prompt(self, question, research):
+        base_forecast_prompt = f"""
 
-    async def _run_forecast_on_binary(
-        self, question: BinaryQuestion, research: str
-    ) -> ReasonedPrediction[float]:
-        persona_name, header = await self._get_persona(question)
-        logger.info(f"Persona (binary) for {question.page_url}: {persona_name} | {header}")
-        prompt = clean_indents(
-            f"""
-            {header}
-
-            Begin your answer with exactly this line:
-            Persona: {persona_name}
+            You are a professional forecaster interviewing for a job.
 
             Your interview question is:
             {question.question_text}
@@ -353,24 +223,29 @@ CONSTRAINTS:
             Question background:
             {question.background_info}
 
-
-            This question's outcome will be determined by the specific criteria below. These criteria have not yet been satisfied:
+            This question’s outcome will be determined by the following criteria (which have not yet been satisfied):
             {question.resolution_criteria}
-
             {question.fine_print}
 
-
-            Your research assistant says:
+            Research briefing:
             {research}
 
             Today is {datetime.now().strftime("%Y-%m-%d")}.
 
-            Before answering you write:
-            (a) The time left until the outcome to the question is known.
-            (b) The status quo outcome if nothing changed.
-            (c) A brief description of a scenario that results in a No outcome.
-            (d) A brief description of a scenario that results in a Yes outcome.
+            Your task:
+            - Reason step-by-step through the question using only the information provided in the research briefing.
+            - Identify key causal mechanisms, dependencies, and constraints that would determine the outcome.
+            - Consider both pathways in which critical events occur and those in which they do not — explain how each scenario would shape the outcome.
+            - Be explicit about institutional timing, actor incentives, and structural barriers.
+            - End with a short set of bullet points summarizing your reasoning chain and the main conditional factors that would change the answer
+            """
+        return base_forecast_prompt
 
+    async def _run_forecast_on_binary(
+        self, question: BinaryQuestion, research: str
+    ) -> ReasonedPrediction[float]:
+        prompt = clean_indents(self.make_forecast_prompt(question, research) +
+            f"""
             You write your rationale remembering that good forecasters put extra weight on the status quo outcome since the world changes slowly most of the time.
 
             The last thing you write is your final answer as: "Probability: ZZ%", 0-100
@@ -391,41 +266,8 @@ CONSTRAINTS:
     async def _run_forecast_on_multiple_choice(
         self, question: MultipleChoiceQuestion, research: str
     ) -> ReasonedPrediction[PredictedOptionList]:
-        persona_name, header = await self._get_persona(question)
-        logger.info(f"Persona (multiple choice) for {question.page_url}: {persona_name} | {header}")
-        prompt = clean_indents(
+        prompt = clean_indents(self.make_forecast_prompt(question, research) + 
             f"""
-            {header}
-
-            Begin your answer with exactly this line:
-            Persona: {persona_name}
-
-            Your interview question is:
-            {question.question_text}
-
-            The options are: {question.options}
-
-
-            Background:
-            {question.background_info}
-
-            {question.resolution_criteria}
-
-            {question.fine_print}
-
-
-            Your research assistant says:
-            {research}
-
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
-
-            Before answering you write:
-            (a) The time left until the outcome to the question is known.
-            (b) The status quo outcome if nothing changed.
-            (c) A description of an scenario that results in an unexpected outcome.
-
-            You write your rationale remembering that (1) good forecasters put extra weight on the status quo outcome since the world changes slowly most of the time, and (2) good forecasters leave some moderate probability on most options to account for unexpected outcomes.
-
             The last thing you write is your final probabilities for the N options in this order {question.options} as:
             Option_A: Probability_A
             Option_B: Probability_B
@@ -461,32 +303,10 @@ CONSTRAINTS:
         upper_bound_message, lower_bound_message = (
             self._create_upper_and_lower_bound_messages(question)
         )
-        persona_name, header = await self._get_persona(question)
-        logger.info(f"Persona (numeric) for {question.page_url}: {persona_name} | {header}")
-        prompt = clean_indents(
+        prompt = clean_indents(self.make_forecast_prompt(question, research) + 
             f"""
-            {header}
 
-            Begin your answer with exactly this line:
-            Persona: {persona_name}
-
-            Your interview question is:
-            {question.question_text}
-
-            Background:
-            {question.background_info}
-
-            {question.resolution_criteria}
-
-            {question.fine_print}
-
-            Units for answer: {question.unit_of_measure if question.unit_of_measure else "Not stated (please infer this)"}
-
-            Your research assistant says:
-            {research}
-
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
-
+            Here are the lower and upper bounds:
             {lower_bound_message}
             {upper_bound_message}
 
@@ -495,17 +315,7 @@ CONSTRAINTS:
             - Never use scientific notation.
             - Always start with a smaller number (more negative if negative) and then increase from there
 
-            Before answering you write:
-            (a) The time left until the outcome to the question is known.
-            (b) The outcome if nothing changed.
-            (c) The outcome if the current trend continued.
-            (d) The expectations of experts and markets.
-            (e) A brief description of an unexpected scenario that results in a low outcome.
-            (f) A brief description of an unexpected scenario that results in a high outcome.
-
-            You remind yourself that good forecasters are humble and set wide 90/10 confidence intervals to account for unknown unknowns.
-
-            The last thing you write is your final answer as:
+            IMPORTANT: The last thing you write is your final answer as:
             "
             Percentile 10: XX
             Percentile 20: XX
