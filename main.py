@@ -431,7 +431,7 @@ if __name__ == "__main__":
             "persona_generator": "openrouter/openai/gpt-5",
         },
         # Optional: override via env FORECAST_OUTPUT_LIMIT
-        output_limit=int(os.getenv("FORECAST_OUTPUT_LIMIT", "250")),
+        #output_limit=int(os.getenv("FORECAST_OUTPUT_LIMIT", "250")),
         prompt_variants=None,
     )
 
